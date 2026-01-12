@@ -1,0 +1,220 @@
+{
+  "name": "Lotto_Number_Generator_Workflow",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "weeks",
+              "triggerAtDay": [
+                6
+              ],
+              "triggerAtHour": 22
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.3,
+      "position": [
+        0,
+        0
+      ],
+      "id": "schedule-trigger-node",
+      "name": "Schedule Trigger"
+    },
+    {
+      "parameters": {
+        "url": "https://search.naver.com/search.naver?query=로또당첨번호",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.3,
+      "position": [
+        192,
+        0
+      ],
+      "id": "http-request-node",
+      "name": "HTTP Request"
+    },
+    {
+      "parameters": {
+        "operation": "extractHtmlContent",
+        "extractionValues": {
+          "values": [
+            {
+              "key": "infoString",
+              "cssSelector": "div.select_tab a.text"
+            },
+            {
+              "key": "numbers",
+              "cssSelector": "div.winning_number span.ball",
+              "returnArray": true
+            },
+            {
+              "key": "bonus",
+              "cssSelector": "div.bonus_number span.ball"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.html",
+      "typeVersion": 1.2,
+      "position": [
+        400,
+        0
+      ],
+      "id": "html-extract-node",
+      "name": "HTML"
+    },
+    {
+      "parameters": {
+        "jsCode": "// 1. 이전 노드(HTML Extract)에서 데이터 가져오기\nconst item = $input.first().json;\n\nconst infoString = item.infoString || \"\"; // 예: \"1205회차 (2026.01.03.)\"\nconst numbersRaw = item.numbers || [];\nconst bonusRaw = item.bonus;\n\n// 2. 정규식으로 회차와 날짜 추출\nconst roundMatch = infoString.match(/(\\d+)회차/);\nconst dateMatch = infoString.match(/\\((.*?)\\)/);\n\nconst round = roundMatch ? parseInt(roundMatch[1]) : 0;\nlet date = dateMatch ? dateMatch[1] : \"\";\n\n// 날짜 끝에 점(.) 제거 (2026.01.03. -> 2026.01.03)\nif (date.endsWith('.')) {\n    date = date.slice(0, -1);\n}\n\n// 번호 배열 숫자 변환\nconst numbers = Array.isArray(numbersRaw) ? numbersRaw.map(n => parseInt(n)) : [];\nconst bonus = parseInt(bonusRaw);\n\n// 3. 최종 데이터 객체 만들기\nconst finalData = {\n    \"round\": round,\n    \"date\": date,\n    \"numbers\": numbers,\n    \"bonus\": bonus\n};\n\n// 4. 파일 내용(문자열)으로 변환\nconst fileContent = JSON.stringify(finalData, null, 2);\n\n// ★ 핵심: JSON 데이터와 Binary(파일) 데이터를 동시에 내보내기\nreturn {\n    json: {\n        lotto_latest: finalData\n    },\n    binary: {\n        data: {\n            data: Buffer.from(fileContent).toString('base64'),\n            mimeType: 'application/json',\n            fileName: 'lotto_input.json'\n        }\n    }\n};"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        608,
+        0
+      ],
+      "id": "javascript-code-node",
+      "name": "Code in JavaScript"
+    },
+    {
+      "parameters": {
+        "operation": "toJson",
+        "options": {
+          "fileName": "lotto_latest.json"
+        }
+      },
+      "type": "n8n-nodes-base.convertToFile",
+      "typeVersion": 1.1,
+      "position": [
+        784,
+        0
+      ],
+      "id": "convert-to-file-node",
+      "name": "Convert to File"
+    },
+    {
+      "parameters": {
+        "operation": "write",
+        "fileName": "/files/num_gen_n8n/lotto_latest.json",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.readWriteFile",
+      "typeVersion": 1.1,
+      "position": [
+        976,
+        0
+      ],
+      "id": "write-file-node",
+      "name": "Write Files To Disk"
+    },
+    {
+      "parameters": {
+        "command": "python3 /home/YOUR_USERNAME/path/to/num_gen_n8n/update_lotto.py"
+      },
+      "type": "n8n-nodes-base.ssh",
+      "typeVersion": 1,
+      "position": [
+        1184,
+        0
+      ],
+      "id": "ssh-command-node",
+      "name": "Execute a command",
+      "credentials": {
+        "sshPassword": {
+          "id": "YOUR_SSH_CREDENTIAL_ID",
+          "name": "YOUR_SSH_CREDENTIAL_NAME"
+        }
+      }
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Schedule Trigger": {
+      "main": [
+        [
+          {
+            "node": "HTTP Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP Request": {
+      "main": [
+        [
+          {
+            "node": "HTML",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTML": {
+      "main": [
+        [
+          {
+            "node": "Code in JavaScript",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code in JavaScript": {
+      "main": [
+        [
+          {
+            "node": "Convert to File",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Convert to File": {
+      "main": [
+        [
+          {
+            "node": "Write Files To Disk",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Write Files To Disk": {
+      "main": [
+        [
+          {
+            "node": "Execute a command",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Execute a command": {
+      "main": [
+        []
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "00000000-0000-0000-0000-000000000000",
+  "meta": {
+    "instanceId": "YOUR_INSTANCE_ID"
+  },
+  "id": "YOUR_WORKFLOW_ID",
+  "tags": []
+}
