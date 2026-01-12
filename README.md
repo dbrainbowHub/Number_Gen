@@ -36,7 +36,7 @@ This system recommends numbers based on past winning data using a **High-Volume 
 
 
 3. **Pattern Filters**
-* 1~4 numbers per range (1~15, 16~30, 31~45).
+* `1~4 numbers per range (1~15, 16~30, 31~45).`
 * Excludes all-odd or all-even combinations.
 * Limits mathematical patterns (Primes, Fibonacci, etc.) to realistic ratios.
 
@@ -140,5 +140,6 @@ MIT License
 4. 실행: `./start_bot.sh`
 
 ## 라이선스
+
 
 MIT License
