@@ -1,0 +1,30 @@
+# 시크릿
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+
+# 로그
+*.log
+nohup.out
+
+# 임시 파일
+*.bak
+*.tmp
+
+# 채팅/대화 요약 (토큰 등 민감정보 포함 가능)
+Chat_*.md
+WORK_PROGRESS_SUMMARY.md
+conversation_summary.md
+
+# Claude Code (v6 Post-Dev Workflow)
+.claude/handoff.md
+.claude/checkpoints/
+.claude/web-checklist-state.json

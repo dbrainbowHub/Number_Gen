@@ -1,0 +1,5 @@
+# Example environment variables for Lotto 6/45 Discord Bot
+# Copy these lines to a file named .env and fill in your own values
+
+DISCORD_BOT_TOKEN=your_discord_bot_token_here
+DISCORD_CHANNEL_ID=your_channel_id_here 

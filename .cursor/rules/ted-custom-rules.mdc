@@ -1,0 +1,6 @@
+---
+description: 
+globs: 
+alwaysApply: false
+---
+If there is a folder in the workspace that is remotely mounted, take that into consideration when making judgments.

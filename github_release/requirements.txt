@@ -1,0 +1,5 @@
+discord.py
+pandas
+python-dotenv
+apscheduler
+pytz 
