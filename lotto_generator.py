@@ -244,85 +244,43 @@ def sample_with_overlap_constraint(pool, n_sets, existing_sets=None, max_overlap
 # 조합 생성 함수 (E안: 앞 3세트 집중 + 뒤 12세트 Pairwise-Overlap 분산)
 def generate_combinations(past_combs, last_draw, n_sets=15):
     """
-    E안: 앞 3세트 집중(TOP5 + 클러스터링) + 뒤 12세트 Pairwise-Overlap<=2 분산
-    백테스트 결과: 3개+ 31.6%, 4개+ 2.4%, 1이하실패 7.3%
+    Cold/Hot 혼합 생성 (각 5세트 × 2그룹 = 10세트):
+      - Cold: 최근 30회차 저빈출 번호 우선 → 동일 필터 적용
+      - Hot : 최근 30회차 고빈출 번호 우선 → 동일 필터 적용
+    E안 Pairwise-Overlap 분산 제약 병행 적용
     """
-    pools = get_number_pools()
-
-    # ── 공통 준비 ──────────────────────────────────────────────────────────────
-    top5_in_last = [n for n in TOP5 if n in last_draw]
-    print(f"[INFO] Top5 규칙: 직전회차와 교집합 {len(top5_in_last)}개 ({top5_in_last})")
-
     past_recommended = load_past_recommended_combinations()
     all_past_combs = past_combs | past_recommended
+    csv_filename = find_latest_lotto_file()
+
     print(f"[INFO] 중복 방지: 과거 당첨 {len(past_combs)}개 + 과거 추천 {len(past_recommended)}개")
 
-    csv_filename = find_latest_lotto_file()
-    frequent_nums = get_balanced_frequent_numbers(csv_filename, top_n=30)
-    print(f"[INFO] 균형잡힌 빈출번호 {len(frequent_nums)}개")
+    # ── Cold/Hot 번호풀 준비 ───────────────────────────────────────────────────
+    cold_pool = get_cold_numbers(csv_filename, recent_count=30, top_n=20)
+    hot_pool  = get_hot_numbers(csv_filename,  recent_count=30, top_n=20)
+    print(f"[INFO] Cold 번호풀 상위10: {cold_pool[:10]}")
+    print(f"[INFO] Hot  번호풀 상위10: {hot_pool[:10]}")
 
-    # ── 앞 3세트: TOP5 집중 (기존 철학 유지) ──────────────────────────────────
-    focused_sets = []
-    tries = 0
-    q_fail = 0
-    d_fail = 0
+    # ── Cold 5세트 생성 ────────────────────────────────────────────────────────
+    cold_sets = generate_group_sets(cold_pool, all_past_combs, csv_filename, n_sets=5, base_count=3)
+    print(f"[INFO] Cold 세트: {len(cold_sets)}개 생성 완료")
 
-    while len(focused_sets) < 3 and tries < 30000:
-        tries += 1
-        if random.random() < 0.5 and frequent_nums:
-            base_count = random.randint(3, 5)
-            nums = random.sample(frequent_nums[:20], min(base_count, len(frequent_nums)))
-            remaining_pool = [i for i in range(1, 46) if i not in nums]
-            nums.extend(random.sample(remaining_pool, 6 - len(nums)))
-        else:
-            nums = []
-            for pool in pools:
-                nums += random.sample(pool, 2)
-            random.shuffle(nums)
-
-        if not check_even_odd(nums):
-            continue
-
-        line_idx = len(focused_sets)
-        nums = apply_top5_rule(nums, top5_in_last, line_idx)
-
-        if not check_pattern_quality(nums, csv_filename):
-            q_fail += 1
-            continue
-
-        comb = tuple(sorted(nums))
-        if comb in all_past_combs or comb in [tuple(sorted(r)) for r in focused_sets]:
-            d_fail += 1
-            continue
-
-        focused_sets.append(nums[:])
-
-    # 앞 3세트에만 클러스터링 적용
-    focused_sets = apply_smart_clustering(focused_sets, cluster_size=3)
-    print(f"[INFO] 앞 3세트(집중) 완료: {len(focused_sets)}개 (시도 {tries}회)")
-
-    # ── 뒤 12세트: Pairwise-Overlap<=2 분산 ──────────────────────────────────
-    n_distributed = n_sets - len(focused_sets)
-    filtered_pool = build_filtered_pool(csv_filename, all_past_combs, pool_size=400)
-    distributed_sets = sample_with_overlap_constraint(
-        filtered_pool, n_sets=n_distributed,
-        existing_sets=focused_sets, max_overlap=2
+    # ── Hot 5세트 생성 (Pairwise-Overlap<=2 추가 적용) ────────────────────────
+    filtered_pool = build_filtered_pool(csv_filename, all_past_combs, pool_size=300)
+    hot_candidates = [s for s in filtered_pool if sum(1 for n in s if n in hot_pool) >= 3]
+    if len(hot_candidates) < 30:
+        hot_candidates = filtered_pool  # fallback
+    hot_sets = sample_with_overlap_constraint(
+        hot_candidates, n_sets=5, existing_sets=cold_sets, max_overlap=2
     )
-    print(f"[INFO] 뒤 {len(distributed_sets)}세트(분산, PW<=2) 완료")
+    if len(hot_sets) < 5:
+        extra = generate_group_sets(hot_pool, all_past_combs, csv_filename,
+                                     n_sets=5 - len(hot_sets), base_count=3)
+        hot_sets.extend(extra)
+    print(f"[INFO] Hot  세트: {len(hot_sets)}개 생성 완료")
 
-    results = focused_sets + distributed_sets
-
-    # 부족한 경우 완화 보완
-    if len(results) < n_sets:
-        extra = sample_with_overlap_constraint(
-            filtered_pool, n_sets - len(results),
-            existing_sets=results, max_overlap=3
-        )
-        results.extend(extra)
-        if extra:
-            print(f"[INFO] 보완 세트 {len(extra)}개 추가 (PW<=3)")
-
-    print(f"[INFO] 최종: {len(results)}개 조합 (앞3집중 + 뒤{len(distributed_sets)}분산)")
+    results = cold_sets + hot_sets
+    print(f"[INFO] 최종: {len(results)}개 조합 (Cold {len(cold_sets)} + Hot {len(hot_sets)})")
     return results
 
 def find_latest_lotto_file():
@@ -337,8 +295,90 @@ def find_latest_lotto_file():
     lotto_files.sort(reverse=True)
     return lotto_files[0][1]
 
+# ─── Cold / Hot 번호풀 ──────────────────────────────────────────────────────
+
+def get_cold_numbers(csv_filename, recent_count=30, top_n=20):
+    """최근 recent_count 회차에서 출현 빈도가 낮은 번호 (Cold)"""
+    freq = Counter()
+    with open(csv_filename, encoding='utf-8') as f:
+        reader = csv.reader(f)
+        next(reader)
+        rows = list(reader)
+    recent = rows[-recent_count:] if len(rows) > recent_count else rows
+    for row in recent:
+        for i in range(3, 9):
+            try:
+                freq[int(row[i])] += 1
+            except (ValueError, IndexError):
+                pass
+    # 1~45 중 출현 빈도 낮은 순
+    all_nums = list(range(1, 46))
+    cold = sorted(all_nums, key=lambda n: freq.get(n, 0))
+    return cold[:top_n]
+
+
+def get_hot_numbers(csv_filename, recent_count=30, top_n=20):
+    """최근 recent_count 회차에서 출현 빈도가 높은 번호 (Hot)"""
+    freq = Counter()
+    with open(csv_filename, encoding='utf-8') as f:
+        reader = csv.reader(f)
+        next(reader)
+        rows = list(reader)
+    recent = rows[-recent_count:] if len(rows) > recent_count else rows
+    for row in recent:
+        for i in range(3, 9):
+            try:
+                freq[int(row[i])] += 1
+            except (ValueError, IndexError):
+                pass
+    hot = sorted(freq.keys(), key=lambda n: freq[n], reverse=True)
+    # 혹시 빠진 번호 보완
+    missing = [n for n in range(1, 46) if n not in hot]
+    hot.extend(missing)
+    return hot[:top_n]
+
+
+def generate_group_sets(pool_primary, all_past_combs, csv_filename, n_sets=5, base_count=3):
+    """pool_primary 번호를 base_count개 우선 사용, 나머지 전체에서 보완 후 필터 적용"""
+    sets_out = []
+    tries = 0
+    max_tries = 30000
+    full_pool = list(range(1, 46))
+
+    while len(sets_out) < n_sets and tries < max_tries:
+        tries += 1
+        # 주 풀에서 base_count개 선택
+        base = random.sample(pool_primary, min(base_count, len(pool_primary)))
+        # 나머지 전체 풀에서 채우기
+        remaining = [n for n in full_pool if n not in base]
+        extra = random.sample(remaining, 6 - len(base))
+        nums = base + extra
+
+        if not check_even_odd(nums):
+            continue
+        if not check_pattern_quality(nums, csv_filename):
+            continue
+
+        comb = tuple(sorted(nums))
+        if comb in all_past_combs or comb in [tuple(sorted(s)) for s in sets_out]:
+            continue
+
+        sets_out.append(sorted(nums))
+
+    return sets_out
+
+
+def _safe_nums(nums):
+    """6개 유효 번호 보장"""
+    unique = sorted(set(nums))
+    if len(unique) == 6:
+        return unique
+    avail = [n for n in range(1, 46) if n not in unique]
+    unique += random.sample(avail, 6 - len(unique))
+    return sorted(unique)
+
+
 def save_lotto_result(combs, latest_file, count):
-    import random  # 함수 시작 부분에 import 추가
     # latest_file에서 회차 추출
     m = re.search(r'lotto_(\d+)\.csv', latest_file)
     round_no = m.group(1) if m else '????'
@@ -346,43 +386,31 @@ def save_lotto_result(combs, latest_file, count):
     lines.append(f"{count:02d}번째 추천 번호에요~❤️❤️")
     lines.append(f"[직전회차 {round_no}회]")
     lines.append('-'*30)
-    
-    # 안전한 조합 출력 (생성된 조합 수에 맞춰 동적 처리)
+
     available_combs = len(combs)
     print(f"[INFO] 사용 가능한 조합 수: {available_combs}개")
-    
+
     if available_combs == 0:
         print("[ERROR] 생성된 조합이 없습니다!")
         return
-    
-    for i in range(3):
-        for j in range(5):
-            combo_idx = i * 5 + j
-            if combo_idx < available_combs:
-                # 정상적으로 생성된 조합 사용
-                nums = sorted(combs[combo_idx])
-            else:
-                # 부족한 조합은 기존 조합을 순환하여 사용
-                cycle_idx = combo_idx % available_combs
-                nums = sorted(combs[cycle_idx])
-            
-            # 안전한 번호 검증 및 수정
-            if len(set(nums)) != 6:
-                print(f"[WARNING] 중복 번호 발견: {nums}")
-                # 중복 제거 후 부족한 번호 추가
-                unique_nums = list(set(nums))
-                missing_count = 6 - len(unique_nums)
-                available_nums = [n for n in range(1, 46) if n not in unique_nums]
-                if len(available_nums) >= missing_count:
-                    additional_nums = random.sample(available_nums, missing_count)
-                    nums = sorted(unique_nums + additional_nums)
-                else:
-                    # 완전 실패시 기본 조합 사용
-                    print(f"[ERROR] 중복 수정 실패, 기본 조합 사용")
-                    nums = sorted([1, 7, 14, 21, 28, 35])  # 기본 안전 조합
-            
-            nums_str = ' '.join(str(n) for n in nums)
-            lines.append(f"{chr(65+j)}: {nums_str}")
+
+    # combs 구조: cold 5세트 + hot 5세트 (총 10) 또는 레거시 15세트
+    if available_combs >= 10:
+        cold_sets = combs[:5]
+        hot_sets  = combs[5:10]
+        groups = [("[A Group - Cold]", cold_sets), ("[B Group - Hot]", hot_sets)]
+    else:
+        # 부족하면 두 그룹에 균등 분배
+        mid = available_combs // 2
+        groups = [("[A Group - Cold]", combs[:mid]), ("[B Group - Hot]", combs[mid:])]
+
+    for group_label, group_sets in groups:
+        lines.append(group_label)
+        for j, combo in enumerate(group_sets):
+            nums = _safe_nums(combo)
+            nums_str = ' '.join(f"{n:02d}" for n in nums)
+            total = sum(nums)
+            lines.append(f"{chr(65+j)}: {nums_str}  (합:{total})")
         lines.append('-'*30)
     messages = [
         '🎉 "이번 주는 당신의 차례입니다! 대박을 기원합니다!"',

@@ -61,9 +61,11 @@ def parse_recommendations():
 
         sets = []
         for line in block.split("\n"):
-            m = re.match(r'^([A-E]): ([\d\s]+)', line.strip())
+            # 신규 포맷: "A: 01 12 23 34 45 06  (합:121)"
+            # 구 포맷:   "A: 1 12 23 34 45 6"
+            m = re.match(r'^([A-O]):\s*([\d\s]+)', line.strip())
             if m:
-                nums = [int(x) for x in m.group(2).split()]
+                nums = [int(x) for x in m.group(2).split() if x.isdigit()]
                 if len(nums) == 6:
                     sets.append(nums)
 
