@@ -80,3 +80,19 @@ num_gen/
 DISCORD_BOT_TOKEN=디스코드_봇_토큰
 DISCORD_CHANNEL_ID=채널_ID
 ```
+
+## 작업 규칙 (CRITICAL)
+
+### 수정 전 백업 필수
+
+코드 또는 문서를 수정하기 전에 반드시 원본을 백업한다.
+
+```bash
+# 백업 예시
+cp lotto_generator.py lotto_generator.py.bak
+cp lotto_result.txt lotto_result.txt.bak
+```
+
+- 백업 파일명: `원본파일명.bak` 또는 `원본파일명.YYYYMMDD.bak`
+- 백업 후 수정 시작, 검증 완료 후 `.bak` 파일 삭제
+- `.bak` 파일은 `.gitignore`에 등록되어 있으므로 커밋되지 않음

@@ -170,103 +170,159 @@ def apply_top5_rule(draw, top5_in_last, line_idx):
     # 0개면 적용 안 함
     return draw
 
-# 조합 생성 함수 (3등/4등 확률 개선 버전)
+# ─── E안: Pairwise-Overlap 분산 헬퍼 ────────────────────────────────────────
+
+def pairwise_overlap(a, b):
+    """두 세트 간 겹치는 번호 수"""
+    return len(set(a) & set(b))
+
+
+def build_filtered_pool(csv_filename, all_past_combs, pool_size=400):
+    """check_pattern_quality 통과 조합 풀을 미리 생성 (뒤 12세트용)"""
+    pool = []
+    pool_set = set()
+    pools_zones = get_number_pools()
+    attempts = 0
+    max_attempts = pool_size * 500
+
+    # 최근 당첨번호 캐시 워밍 (내부 파일IO 최소화)
+    _load_sim_rows(csv_filename)
+
+    while len(pool) < pool_size and attempts < max_attempts:
+        attempts += 1
+        if random.random() < 0.6:
+            nums = []
+            for zone in pools_zones:
+                nums += random.sample(zone, 2)
+        else:
+            nums = random.sample(range(1, 46), 6)
+
+        if not check_even_odd(nums):
+            continue
+        if not check_pattern_quality(nums, csv_filename):
+            continue
+        comb = tuple(sorted(nums))
+        if comb in all_past_combs or comb in pool_set:
+            continue
+        pool.append(sorted(nums))
+        pool_set.add(comb)
+
+    print(f"[INFO] 필터 풀 생성: {len(pool)}개 (시도 {attempts}회)")
+    return pool
+
+
+def sample_with_overlap_constraint(pool, n_sets, existing_sets=None, max_overlap=2, max_attempts=5000):
+    """Pairwise-Overlap <= max_overlap 제약으로 n_sets개 선택"""
+    if existing_sets is None:
+        existing_sets = []
+    selected = list(existing_sets)
+    pool_shuffled = list(pool)
+    random.shuffle(pool_shuffled)
+
+    current_max = max_overlap
+    attempts = 0
+
+    while len(selected) - len(existing_sets) < n_sets and attempts < max_attempts:
+        attempts += 1
+        if not pool_shuffled:
+            if current_max < 4:
+                current_max += 1
+                pool_shuffled = list(pool)
+                random.shuffle(pool_shuffled)
+            else:
+                break
+
+        candidate = pool_shuffled.pop()
+        max_ov = max((pairwise_overlap(candidate, s) for s in selected), default=0)
+        if max_ov <= current_max:
+            selected.append(candidate)
+            current_max = max_overlap  # 성공 시 원래 제약으로 복귀
+
+    return selected[len(existing_sets):]
+
+
+# 조합 생성 함수 (E안: 앞 3세트 집중 + 뒤 12세트 Pairwise-Overlap 분산)
 def generate_combinations(past_combs, last_draw, n_sets=15):
     """
-    완전 제약 조건 하에서 당첨번호 조합 생성
-    7단계(중복 방지), 8단계(Top5 특별규칙) 포함
+    E안: 앞 3세트 집중(TOP5 + 클러스터링) + 뒤 12세트 Pairwise-Overlap<=2 분산
+    백테스트 결과: 3개+ 31.6%, 4개+ 2.4%, 1이하실패 7.3%
     """
-    results = []
     pools = get_number_pools()
-    
-    # ==================== 8단계: Top5 특별규칙 준비 ====================
+
+    # ── 공통 준비 ──────────────────────────────────────────────────────────────
     top5_in_last = [n for n in TOP5 if n in last_draw]
     print(f"[INFO] Top5 규칙: 직전회차와 교집합 {len(top5_in_last)}개 ({top5_in_last})")
-    
-    # ==================== 7단계: 중복 방지 준비 ====================
-    # 7-1. 과거 당첨번호 로드 (1,174개 조합)
-    # 7-2. 과거 추천번호 로드 (210개 조합)
+
     past_recommended = load_past_recommended_combinations()
     all_past_combs = past_combs | past_recommended
     print(f"[INFO] 중복 방지: 과거 당첨 {len(past_combs)}개 + 과거 추천 {len(past_recommended)}개")
-    
-    # 3등/4등 확률 향상을 위한 데이터 준비 - 전체 데이터 사용으로 개선!
-    # CSV_FILE을 함수 내부에서 동적으로 찾기
+
     csv_filename = find_latest_lotto_file()
-    frequent_nums = get_balanced_frequent_numbers(csv_filename, top_n=30)  # 균형잡힌 빈출번호 사용
-    recent_wins = get_recent_winning_numbers(csv_filename, count=3)
-    
-    print(f"[INFO] 분석 완료 - 균형잡힌 빈출번호 {len(frequent_nums)}개, 최근 당첨번호 {len(recent_wins)}회차")
-    
-    # 1단계: 부분 일치 조합 생성 (4등 확률 향상)
-    partial_match_sets = generate_partial_match_sets(recent_wins, frequent_nums, target_match=4)
-    for combo in partial_match_sets:
-        if len(results) < n_sets:
-            results.append(combo)
-    
-    print(f"[INFO] 부분 일치 조합 생성: {len(partial_match_sets)}개")
-    
-    # 2단계: 기존 로직으로 나머지 조합 생성
+    frequent_nums = get_balanced_frequent_numbers(csv_filename, top_n=30)
+    print(f"[INFO] 균형잡힌 빈출번호 {len(frequent_nums)}개")
+
+    # ── 앞 3세트: TOP5 집중 (기존 철학 유지) ──────────────────────────────────
+    focused_sets = []
     tries = 0
-    quality_failures = 0
-    duplicate_failures = 0
-    
-    # 더 유연한 생성을 위해 시도 횟수 증가 및 단계별 완화
-    max_tries = 50000  # 시도 횟수
-    
-    while len(results) < n_sets and tries < max_tries:
+    q_fail = 0
+    d_fail = 0
+
+    while len(focused_sets) < 3 and tries < 30000:
         tries += 1
-        
-        # ==================== 3단계: 빈출번호 기반 가중 선택 ====================
-        # 빈출번호 우선 사용 (50% 확률로 증가 - 전체 데이터 기반이므로 더 신뢰도 높음)
         if random.random() < 0.5 and frequent_nums:
-            # 상위 빈출번호에서 3-5개 선택 (확률 조정)
             base_count = random.randint(3, 5)
-            # 상위 20개 빈출번호에서 선택 (더 넓은 범위)
             nums = random.sample(frequent_nums[:20], min(base_count, len(frequent_nums)))
-            
-            # 나머지는 전체 범위에서 선택
             remaining_pool = [i for i in range(1, 46) if i not in nums]
             nums.extend(random.sample(remaining_pool, 6 - len(nums)))
         else:
-            # ==================== 1단계: 기본 구조 생성 ====================
-            # 구간별 선택 (각 구간에서 2개씩)
             nums = []
             for pool in pools:
                 nums += random.sample(pool, 2)
             random.shuffle(nums)
-        
-        # 기본 홀짝 체크 (1단계-2에서 더 엄격하게 체크됨)
+
         if not check_even_odd(nums):
             continue
-            
-        # ==================== 8단계: Top5 특별규칙 적용 ====================
-        line_idx = len(results) % 5  # 0~4 라인별 차별화
+
+        line_idx = len(focused_sets)
         nums = apply_top5_rule(nums, top5_in_last, line_idx)
-        
-        # ==================== 1~6단계: 완전 제약 조건 체크 ====================
+
         if not check_pattern_quality(nums, csv_filename):
-            quality_failures += 1
+            q_fail += 1
             continue
-            
-        # ==================== 7단계: 중복 방지 최종 체크 ====================
+
         comb = tuple(sorted(nums))
-        
-        # 7-1. 과거 당첨번호와 중복 체크
-        # 7-2. 과거 추천번호와 중복 체크  
-        # 7-3. 현재 세트 내 실시간 중복 체크
-        if comb in all_past_combs or comb in [tuple(sorted(r)) for r in results]:
-            duplicate_failures += 1
+        if comb in all_past_combs or comb in [tuple(sorted(r)) for r in focused_sets]:
+            d_fail += 1
             continue
-            
-        results.append(nums[:])
-    
-    # 3단계: 스마트 클러스터링 적용 (공통 번호 배치)
-    results = apply_smart_clustering(results, cluster_size=5)
-    
-    print(f"[INFO] 생성 완료: {len(results)}개 조합")
-    print(f"[INFO] 총 시도: {tries}회 (품질 실패: {quality_failures}회, 중복 실패: {duplicate_failures}회)")
-    print(f"[INFO] 8단계 완전 제약 조건 적용 및 클러스터링 완료")
+
+        focused_sets.append(nums[:])
+
+    # 앞 3세트에만 클러스터링 적용
+    focused_sets = apply_smart_clustering(focused_sets, cluster_size=3)
+    print(f"[INFO] 앞 3세트(집중) 완료: {len(focused_sets)}개 (시도 {tries}회)")
+
+    # ── 뒤 12세트: Pairwise-Overlap<=2 분산 ──────────────────────────────────
+    n_distributed = n_sets - len(focused_sets)
+    filtered_pool = build_filtered_pool(csv_filename, all_past_combs, pool_size=400)
+    distributed_sets = sample_with_overlap_constraint(
+        filtered_pool, n_sets=n_distributed,
+        existing_sets=focused_sets, max_overlap=2
+    )
+    print(f"[INFO] 뒤 {len(distributed_sets)}세트(분산, PW<=2) 완료")
+
+    results = focused_sets + distributed_sets
+
+    # 부족한 경우 완화 보완
+    if len(results) < n_sets:
+        extra = sample_with_overlap_constraint(
+            filtered_pool, n_sets - len(results),
+            existing_sets=results, max_overlap=3
+        )
+        results.extend(extra)
+        if extra:
+            print(f"[INFO] 보완 세트 {len(extra)}개 추가 (PW<=3)")
+
+    print(f"[INFO] 최종: {len(results)}개 조합 (앞3집중 + 뒤{len(distributed_sets)}분산)")
     return results
 
 def find_latest_lotto_file():
@@ -380,41 +436,54 @@ def load_past_recommended_combinations():
     
     return past_recommended
 
+# 최근 당첨번호 캐시 (check_similarity_with_recent_patterns 파일IO 최소화)
+_sim_rows_cache = []
+_sim_rows_filename = ""
+
+def _load_sim_rows(filename, recent_count=30):
+    global _sim_rows_cache, _sim_rows_filename
+    if _sim_rows_filename == filename and _sim_rows_cache:
+        return _sim_rows_cache
+    try:
+        with open(filename, encoding='utf-8') as f:
+            reader = csv.reader(f)
+            next(reader)
+            rows = list(reader)
+        _sim_rows_cache = rows[-recent_count:] if len(rows) > recent_count else rows
+        _sim_rows_filename = filename
+    except Exception:
+        _sim_rows_cache = []
+    return _sim_rows_cache
+
 # 과거 패턴 유사성 체크를 위한 함수
 def check_similarity_with_recent_patterns(numbers, filename, recent_count=30):
     """최근 당첨번호들과의 유사성이 너무 높으면 제외"""
     nums = sorted(numbers)
-    
+
     try:
-        with open(filename, encoding='utf-8') as f:
-            reader = csv.reader(f)
-            next(reader)  # 헤더
-            rows = list(reader)
-            
-            # 최근 30회차만 확인
-            recent_rows = rows[-recent_count:] if len(rows) > recent_count else rows
-            
-            for row in recent_rows:
-                past_nums = row[3:9]  # 당첨번호 6개
-                if all(n.isdigit() for n in past_nums):
-                    past_sorted = sorted([int(n) for n in past_nums])
-                    
-                    # 5개 이상 일치하면 너무 유사
-                    matches = len(set(nums) & set(past_sorted))
-                    if matches >= 5:
-                        return False
-                    
-                    # 패턴 유사성 체크 (간격 패턴이 비슷하면 제외)
-                    past_gaps = [past_sorted[i+1] - past_sorted[i] for i in range(5)]
-                    current_gaps = [nums[i+1] - nums[i] for i in range(5)]
-                    
-                    # 간격 패턴이 3개 이상 같으면 제외
-                    gap_matches = sum(1 for i in range(5) if past_gaps[i] == current_gaps[i])
-                    if gap_matches >= 3:
-                        return False
-    except:
+        recent_rows = _load_sim_rows(filename, recent_count)
+
+        for row in recent_rows:
+            past_nums = row[3:9]  # 당첨번호 6개
+            if all(n.isdigit() for n in past_nums):
+                past_sorted = sorted([int(n) for n in past_nums])
+
+                # 5개 이상 일치하면 너무 유사
+                matches = len(set(nums) & set(past_sorted))
+                if matches >= 5:
+                    return False
+
+                # 패턴 유사성 체크 (간격 패턴이 비슷하면 제외)
+                past_gaps = [past_sorted[i+1] - past_sorted[i] for i in range(5)]
+                current_gaps = [nums[i+1] - nums[i] for i in range(5)]
+
+                # 간격 패턴이 3개 이상 같으면 제외
+                gap_matches = sum(1 for i in range(5) if past_gaps[i] == current_gaps[i])
+                if gap_matches >= 3:
+                    return False
+    except Exception:
         pass  # 파일 오류 시 패스
-    
+
     return True
 
 # 고급 수학적 제약 조건들
